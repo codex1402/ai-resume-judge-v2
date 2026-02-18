@@ -1,26 +1,14 @@
 """
 AI Hiring Lab - Entry-Level ATS Resume Analyzer
-Uses Google Gemini to analyze resumes for entry-level/new graduate software engineering roles
+Uses Groq to analyze resumes for entry-level/new graduate software engineering roles
 """
 
 import os
 import json
 import re
-from google import genai
+import time
+from groq import Groq
 from dotenv import load_dotenv
-
-# Try to import ClientError if available
-try:
-    from google.genai.types import ClientError
-except ImportError:
-    # Fallback if ClientError is not directly importable
-    ClientError = None
-
-# Prefer typed config objects when available (google-genai v1+)
-try:
-    from google.genai import types as genai_types
-except ImportError:
-    genai_types = None
 
 
 def _extract_first_json_object(text: str) -> str | None:
@@ -89,6 +77,42 @@ def _is_auth_error(exc: Exception) -> bool:
         or "invalid api key" in s
         or "authentication" in s
     )
+
+
+def _is_model_not_found_error(exc: Exception) -> bool:
+    s = str(exc).lower()
+    return ("404" in s and "not_found" in s) or "model" in s and "is not found" in s
+
+
+PREFERRED_MODELS = [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "mixtral-8x7b-32768",
+]
+
+
+def _discover_model_candidates(client_obj):
+    """
+    Resolve valid model candidates for the current account/API version.
+    """
+    try:
+        available = set()
+        model_list = client_obj.models.list()
+        model_data = getattr(model_list, "data", []) or []
+        for model in model_data:
+            name = getattr(model, "id", "")
+            if not name:
+                continue
+            available.add(name)
+
+        resolved = [m for m in PREFERRED_MODELS if m in available]
+        if resolved:
+            print(f"Model candidates resolved: {', '.join(resolved)}")
+            return resolved
+    except Exception as model_list_err:
+        print(f"Model discovery failed, using defaults: {model_list_err}")
+
+    return PREFERRED_MODELS[:]
 
 
 def _repair_common_json_issues(text: str) -> str:
@@ -308,7 +332,6 @@ def _local_ats_fallback(resume_text: str, reason: str = "") -> dict:
     elif score >= 60:
         verdict = "Borderline"
 
-    note = reason or "Cloud model unavailable; used local heuristic evaluation."
     name = _guess_candidate_name(resume_text)
 
     return {
@@ -322,14 +345,14 @@ def _local_ats_fallback(resume_text: str, reason: str = "") -> dict:
         },
         "detailed_analysis": {
             "strengths": [
-                "Resume processed successfully with offline fallback logic.",
-                "Core technical keywords and project evidence were detected.",
-                "Result generated despite external API unavailability.",
+                "Detected relevant technical keywords and project-oriented content.",
+                "Resume shows baseline entry-level software engineering readiness.",
+                "Track scores were generated using ATS-style heuristic checks.",
             ],
             "weaknesses": [
-                note,
-                "This score is approximate and less detailed than LLM output.",
-                "Re-run after quota reset for richer ATS analysis.",
+                "Add measurable outcomes for projects and internships.",
+                "Include GitHub and deployed links as proof of work.",
+                "Clarify ownership, complexity, and impact per experience bullet.",
             ],
             "actionable_improvements": [
                 "[Product] Add DSA profile link and solved problems count.",
@@ -345,12 +368,14 @@ def _local_ats_fallback(resume_text: str, reason: str = "") -> dict:
 
 # Load environment
 load_dotenv()
-_primary_key = (os.getenv("GOOGLE_API_KEY") or "").strip()
-_extra_keys_raw = (os.getenv("GOOGLE_API_KEYS") or "").strip()
+_primary_key = (os.getenv("GROQ_API_KEY") or "").strip()
+_extra_keys_raw = (os.getenv("GROQ_API_KEYS") or "").strip()
 _all_keys = [_primary_key] + [k.strip() for k in _extra_keys_raw.split(",") if k.strip()]
 api_keys = list(dict.fromkeys([k for k in _all_keys if k]))
 api_key = api_keys[0] if api_keys else ""
-clients = [genai.Client(api_key=k) for k in api_keys]
+clients = [Groq(api_key=k) for k in api_keys]
+model_candidates_configured = _discover_model_candidates(clients[0]) if clients else PREFERRED_MODELS[:]
+_quota_cooldown_until = 0.0
 
 print(f"API keys loaded: {len(api_keys)}")
 
@@ -371,6 +396,16 @@ def analyze_resume_ats(resume_text):
     print(f"{'='*60}")
     print(f"Resume length: {len(resume_text)} characters")
     print(f"Preview: {resume_text[:100].replace(chr(10), ' ')}...")
+
+    global _quota_cooldown_until
+    now = time.time()
+    if now < _quota_cooldown_until:
+        remaining = int(_quota_cooldown_until - now)
+        print(f"Quota cooldown active ({remaining}s). Using local fallback.")
+        return _local_ats_fallback(
+            resume_text,
+            reason="Quota cooldown active; skipped provider call."
+        )
     
     if not clients:
         return {
@@ -481,34 +516,37 @@ TARGET TRACK INFERENCE:
 - Even if you infer a target, you MUST provide improvements that are usable for ALL three tracks, labeled clearly.
 
 RESUME TEXT:
-{resume_text[:3000]}
+{resume_text[:6000]}
 
 CRITICAL INSTRUCTIONS:
-1. Extract the candidate's full name from the resume
-2. Calculate an overall_score (0-100) using standard ATS calibration (70-80 is solid, 80-90 is excellent)
-3. Determine verdict: "Shortlist" (75+), "Borderline" (60-74), or "Reject" (<60)
-4. Score each track independently (product_based, service_based, incubator_startup) on a 0-100 scale
-5. List 3-4 specific STRENGTHS found in the resume (be specific, e.g., "Strong DSA foundation with 500+ LeetCode problems solved")
-6. List 2-3 specific WEAKNESSES or missing skills (be constructive). If gap years exist and are not addressed, include that as one weakness.
-7. Provide ACTIONABLE IMPROVEMENTS that are realistic and aligned to the candidate's likely target track AND modern hiring. The improvements MUST:
-   - be concrete and directly applicable to their resume
-   - include at least one improvement for each category, clearly labeled:
-     - "[Product]" improvement tailored for product-based interviews/ATS
-     - "[Service]" improvement tailored for service-based roles
-     - "[Startup]" improvement tailored for startups/incubators
-   - if you detected a gap year/break, include one labeled "[Gap]" with a practical fix (explain, show projects/certs during gap)
-   - Examples:
-     - "[Startup] Add a deployed link + short demo video to Project X; include user numbers or latency improvement"
-     - "[Product] Add DSA proof: LeetCode profile + 150 problems, highlight 2 hard problems and complexity"
-     - "[Service] Add teamwork proof: group project role, Jira/Agile, communication artifacts"
-     - "[Gap] Add 1-line explanation + list 2 concrete things done in gap (course + project + timeline)"
-8. Generate one TECHNICAL question based on their strongest project
-9. Generate one BEHAVIORAL question based on their team/startup experience
-10. Keep output compact to prevent truncation:
-   - each bullet <= 12 words
-   - exactly 3 strengths, 3 weaknesses, 3 actionable_improvements
-   - each interview question <= 20 words
-   - no extra keys and no markdown
+1. Extract the candidate's full name from the resume.
+2. Use EVIDENCE-BASED SCORING ONLY. Every score must be justified by concrete resume evidence.
+3. Apply this scoring formula for overall_score:
+   - 30% project depth and execution quality
+   - 25% internship/professional impact and quantified outcomes
+   - 20% core CS/DSA/problem-solving proof
+   - 15% deployment/GitHub/proof-of-work links
+   - 10% communication/structure/clarity of resume
+4. Penalize missing evidence explicitly:
+   - no metrics, no links, vague bullets, unclear ownership, timeline gaps without explanation.
+5. Avoid score anchoring:
+   - DO NOT default to 75-80.
+   - If evidence is weak, score should fall to 45-65.
+   - If evidence is strong and quantified, score can be 80+.
+6. Determine verdict: "Shortlist" (75+), "Borderline" (60-74), or "Reject" (<60).
+7. Score each track independently (product_based, service_based, incubator_startup) on a 0-100 scale.
+8. Return 4-6 strengths, 4-6 weaknesses, and 6-9 actionable_improvements.
+9. Improvements must be highly specific to this exact resume and include:
+   - at least two [Product] improvements
+   - at least two [Service] improvements
+   - at least two [Startup] improvements
+   - one [Gap] improvement if you detect any gap/break
+10. Interview questions must be comprehensive and realistic:
+   - technical question should include architecture/design tradeoffs and a follow-up constraint
+   - behavioral question should include context, conflict, and measurable outcome expectation
+   - each question should be 35-90 words
+11. Do not use generic advice templates. Reference candidate-specific skills, projects, and missing evidence.
+12. Output valid JSON only. No markdown. No extra keys.
 
 Return ONLY valid JSON using this exact schema (no markdown, no explanation):
 
@@ -546,34 +584,24 @@ Return ONLY valid JSON using this exact schema (no markdown, no explanation):
 }}"""
 
     try:
-        print("Calling Gemini API with JSON response format...")
-        
-        if genai_types is not None:
-            gen_config = genai_types.GenerateContentConfig(
-                temperature=0.2,
-                max_output_tokens=2048,
-                response_mime_type="application/json",
-            )
-        else:
-            gen_config = {
-                "temperature": 0.2,
-                "max_output_tokens": 2048,
-                "response_mime_type": "application/json",
-            }
+        print("Calling Groq API with JSON response format...")
 
         response = None
         auth_errors = 0
         quota_errors = 0
-        model_candidates = ["gemini-2.5-flash", "gemini-1.5-flash"]
+        model_candidates = model_candidates_configured
 
         for key_index, client in enumerate(clients, start=1):
+            key_hit_quota = False
             for model_name in model_candidates:
                 try:
                     print(f"Trying key #{key_index} with model {model_name}")
-                    response = client.models.generate_content(
+                    response = client.chat.completions.create(
                         model=model_name,
-                        contents=prompt,
-                        config=gen_config
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.35,
+                        max_tokens=3200,
+                        response_format={"type": "json_object"},
                     )
                     break
                 except Exception as api_err:
@@ -584,10 +612,18 @@ Return ONLY valid JSON using this exact schema (no markdown, no explanation):
                     if _is_quota_error(api_err):
                         quota_errors += 1
                         print(f"Quota/rate error on key #{key_index} ({model_name})")
+                        key_hit_quota = True
+                        break
+                    if _is_model_not_found_error(api_err):
+                        print(f"Model unavailable for this API/version: {model_name}")
                         continue
                     raise
             if response is not None:
                 break
+            if key_hit_quota:
+                # Avoid burning requests on additional models for the same key
+                # when provider already reported quota/rate exhaustion.
+                continue
 
         if response is None:
             if quota_errors > 0:
@@ -598,48 +634,16 @@ Return ONLY valid JSON using this exact schema (no markdown, no explanation):
         
         print("API response received")
 
-        # Log finish reason if available (helps diagnose truncation)
-        try:
-            if hasattr(response, "candidates") and response.candidates and len(response.candidates) > 0:
-                fr = getattr(response.candidates[0], "finish_reason", None)
-                if fr is not None:
-                    print(f"finish_reason: {fr}")
-        except Exception:
-            pass
-        
-        # Get response text - with JSON mode, response should be JSON but may be split across parts
+        # Extract text from Groq chat completion
         raw_text = None
         try:
-            raw_from_text = None
-            if hasattr(response, "text") and response.text:
-                raw_from_text = str(response.text).strip()
-
-            raw_from_parts = None
-            parts_count = 0
-            if hasattr(response, "candidates") and response.candidates and len(response.candidates) > 0:
-                candidate = response.candidates[0]
-                if hasattr(candidate, "content") and hasattr(candidate.content, "parts") and candidate.content.parts:
-                    parts_count = len(candidate.content.parts)
-                    collected = []
-                    for part in candidate.content.parts:
-                        if hasattr(part, "text") and part.text:
-                            collected.append(str(part.text))
-                    raw_from_parts = "".join(collected).strip() if collected else None
-
-            # Prefer the longer of response.text vs joined parts
-            if raw_from_text and raw_from_parts:
-                raw_text = raw_from_parts if len(raw_from_parts) >= len(raw_from_text) else raw_from_text
-            else:
-                raw_text = raw_from_parts or raw_from_text
-
+            if response and getattr(response, "choices", None):
+                first_choice = response.choices[0]
+                message = getattr(first_choice, "message", None)
+                if message and getattr(message, "content", None):
+                    raw_text = str(message.content).strip()
             if not raw_text:
-                raise ValueError("Could not extract text from response - response is empty")
-
-            if parts_count:
-                print(f"Candidate parts detected: {parts_count} (joined length: {len(raw_from_parts or '')})")
-                if raw_from_text is not None:
-                    print(f"response.text length: {len(raw_from_text)}")
-
+                raise ValueError("Could not extract text from Groq response - response is empty")
         except (AttributeError, IndexError, KeyError, TypeError) as attr_err:
             print(f"Warning: Error accessing response: {attr_err}")
             raise ValueError(f"Could not extract text from response: {attr_err}")
@@ -760,6 +764,7 @@ Return ONLY valid JSON using this exact schema (no markdown, no explanation):
         
         if error_msg == "API_QUOTA_EXCEEDED":
             print("API Quota Exceeded - using local fallback analysis")
+            _quota_cooldown_until = time.time() + 600  # 10 minutes
             return _local_ats_fallback(
                 resume_text,
                 reason="API quota exceeded across available keys/models."
@@ -778,13 +783,13 @@ Return ONLY valid JSON using this exact schema (no markdown, no explanation):
                 "detailed_analysis": {
                     "strengths": [],
                     "weaknesses": [
-                        "Invalid or expired API key. Authentication failed with Google Gemini API."
+                        "Invalid or expired API key. Authentication failed with Groq API."
                     ],
                     "actionable_improvements": [
-                        "Verify your GOOGLE_API_KEY in the .env file is correct",
-                        "Optionally set GOOGLE_API_KEYS with comma-separated backup keys",
+                        "Verify your GROQ_API_KEY in the .env file is correct",
+                        "Optionally set GROQ_API_KEYS with comma-separated backup keys",
                         "Check if your API key has expired or been revoked",
-                        "Generate a new API key from Google AI Studio if needed"
+                        "Generate a new API key from Groq Console if needed"
                     ]
                 },
                 "interview_questions": {
@@ -814,13 +819,13 @@ Return ONLY valid JSON using this exact schema (no markdown, no explanation):
         )
         
         print(f"API Error: {error_type}: {e}")
-        import traceback
-        traceback.print_exc()
         
-        if is_quota_error:
+        if is_quota_error or _is_model_not_found_error(e):
+            if is_quota_error:
+                _quota_cooldown_until = time.time() + 600  # 10 minutes
             return _local_ats_fallback(
                 resume_text,
-                reason="Runtime quota/rate error. Local fallback was used."
+                reason="Runtime provider-side error. Local fallback was used."
             )
         
         return {
@@ -838,7 +843,7 @@ Return ONLY valid JSON using this exact schema (no markdown, no explanation):
                 "actionable_improvements": [
                     "Check server logs for detailed error information",
                     "Verify API key is correctly configured",
-                    "Ensure network connectivity to Google API servers"
+                    "Ensure network connectivity to Groq API servers"
                 ]
             },
             "interview_questions": {

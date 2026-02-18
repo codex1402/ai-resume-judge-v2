@@ -9,7 +9,7 @@ from backend.gatekeeper.judge import analyze_resume_ats
 
 # --- 1. CONFIGURATION ---
 load_dotenv()
-api_key = os.getenv("GOOGLE_API_KEY")
+api_key = os.getenv("GROQ_API_KEY")
 app = Flask(__name__)
 CORS(app)  # Allow Frontend connection
 
