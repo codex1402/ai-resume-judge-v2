@@ -1,0 +1,14 @@
+REPR:
+'Response length: 245\n======================================================================\n{\n    "candidate_name": "LAXMIKANTSHUKLA",\n    "signal_score": 40,\n    "verdict": "REJECTED",\n    "red_flags": [\n        "No GitHub links or live demos for any projects, rendering them unverifiable.",\n        "Zero quantifiable metrics or impact\n======================================================================'
+
+ACTUAL:
+Response length: 245
+======================================================================
+{
+    "candidate_name": "LAXMIKANTSHUKLA",
+    "signal_score": 40,
+    "verdict": "REJECTED",
+    "red_flags": [
+        "No GitHub links or live demos for any projects, rendering them unverifiable.",
+        "Zero quantifiable metrics or impact
+======================================================================

@@ -1,0 +1,11 @@
+.env
+venv/
+__pycache__/
+*.pyc
+uploads/
+temp_uploads/
+last_ai_response_ats.txt
+last_ai_response.txt
+debug_ai_response.txt
+test_output.txt
+*.log
