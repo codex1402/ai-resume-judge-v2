@@ -1,7 +1,7 @@
 services:
   - type: web
     name: ai-hiring-lab-api
-    env: python
+    runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn --bind 0.0.0.0:$PORT server:app
@@ -19,8 +19,7 @@ services:
 
   - type: web
     name: ai-hiring-lab-frontend
-    env: static
-    plan: free
+    runtime: static
     rootDir: frontend
     buildCommand: npm ci && npm run build
     staticPublishPath: dist
