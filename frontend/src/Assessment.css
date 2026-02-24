@@ -1,0 +1,150 @@
+.assessment-root {
+  display: grid;
+  gap: 1.5rem;
+  width: min(1100px, 100%);
+  margin: 2rem auto;
+}
+
+.assessment-card {
+  background: #131a24;
+  border: 1px solid #2a3448;
+  border-radius: 14px;
+  padding: 1.25rem;
+  color: #e7edf9;
+}
+
+.assessment-card h2,
+.assessment-card h3,
+.assessment-card h4 {
+  margin: 0 0 0.75rem;
+}
+
+.assessment-controls {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.assessment-controls label {
+  display: grid;
+  gap: 0.4rem;
+  font-weight: 600;
+  color: #d4def2;
+}
+
+.assessment-controls select,
+.assessment-controls textarea,
+.answer-box {
+  background: #0d131b;
+  color: #e6edf7;
+  border: 1px solid #354259;
+  border-radius: 10px;
+  padding: 0.65rem 0.75rem;
+  font-size: 0.95rem;
+}
+
+.assessment-controls button,
+.submit-btn {
+  background: #1f6feb;
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  padding: 0.75rem 1rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.assessment-controls button:disabled,
+.submit-btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.assessment-error {
+  margin-top: 0.8rem;
+  background: #3a1e24;
+  border: 1px solid #7e2f3b;
+  color: #ffbdc5;
+  padding: 0.65rem 0.8rem;
+  border-radius: 10px;
+}
+
+.secure-assessment {
+  position: relative;
+  background: linear-gradient(180deg, #0e1420 0%, #101826 100%);
+  border: 1px solid #2c3750;
+  border-radius: 14px;
+  padding: 1rem;
+  color: #eef3ff;
+}
+
+.secure-topbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid #2d3950;
+}
+
+.secure-metrics {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.timer-chip,
+.violation-chip {
+  font-size: 0.85rem;
+  font-weight: 700;
+  padding: 0.35rem 0.65rem;
+  border-radius: 999px;
+  border: 1px solid #3b4966;
+  background: #1a2233;
+}
+
+.timer-chip.danger {
+  border-color: #a64545;
+  color: #ffb0b0;
+  background: #321c1c;
+}
+
+.violation-chip.warn {
+  border-color: #8d6a22;
+  color: #ffd790;
+  background: #35290f;
+}
+
+.questions-block {
+  margin-top: 1rem;
+  display: grid;
+  gap: 0.8rem;
+}
+
+.question-card {
+  background: #111826;
+  border: 1px solid #2d3952;
+  border-radius: 10px;
+  padding: 0.85rem;
+}
+
+.question-title {
+  font-weight: 700;
+  color: #f2f6ff;
+}
+
+.options-grid {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.option-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  color: #d8e1f4;
+}
+
+.muted {
+  color: #a9b8d4;
+  margin: 0;
+}

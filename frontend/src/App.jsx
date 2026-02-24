@@ -1,8 +1,10 @@
 import { useState } from 'react'
 import './App.css'
+import Assessment from './Assessment'
 
 function App() {
   const [file, setFile] = useState(null)
+  const [track, setTrack] = useState('PRODUCT')
   const [result, setResult] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -23,6 +25,7 @@ function App() {
     setError(null)
     const formData = new FormData()
     formData.append('file', file)
+    formData.append('track', track)
 
     try {
       const response = await fetch('http://127.0.0.1:5000/analyze', {
@@ -74,6 +77,16 @@ function App() {
 
       <div className="upload-section">
         <div className="upload-card">
+          <select
+            value={track}
+            onChange={(e) => setTrack(e.target.value)}
+            disabled={loading}
+            className="track-select"
+          >
+            <option value="PRODUCT">Product</option>
+            <option value="SERVICE">Service</option>
+            <option value="STARTUP">Startup</option>
+          </select>
           <input 
             type="file" 
             accept=".pdf" 
@@ -102,6 +115,7 @@ function App() {
       </div>
 
       {result && (
+        <>
         <div className="dashboard">
           {/* Error Banner for API Quota/Auth Errors */}
           {(result.verdict === 'ERROR' && result.detailed_analysis?.weaknesses?.some(w => 
@@ -292,6 +306,11 @@ function App() {
             </div>
           </div>
         </div>
+        <Assessment
+          initialResumeText={result.resume_text || ''}
+          initialTrack={track}
+        />
+        </>
       )}
     </div>
   )
