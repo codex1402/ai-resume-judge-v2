@@ -9,3 +9,5 @@ last_ai_response.txt
 debug_ai_response.txt
 test_output.txt
 *.log
+*.db
+backend/storage/data/

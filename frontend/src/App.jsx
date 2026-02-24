@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import './App.css'
 import Assessment from './Assessment'
+import HistoryPanel from './HistoryPanel'
 
 function App() {
   const [file, setFile] = useState(null)
@@ -309,7 +310,10 @@ function App() {
         <Assessment
           initialResumeText={result.resume_text || ''}
           initialTrack={track}
+          initialResumeSubmissionId={result.resume_submission_id || null}
+          initialCandidateId={result.candidate_id || null}
         />
+        <HistoryPanel />
         </>
       )}
     </div>

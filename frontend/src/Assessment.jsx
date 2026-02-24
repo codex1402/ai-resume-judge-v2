@@ -14,9 +14,16 @@ function formatTime(totalSeconds) {
   return `${mins}:${secs}`
 }
 
-function Assessment({ initialResumeText = '', initialTrack = 'PRODUCT' }) {
+function Assessment({
+  initialResumeText = '',
+  initialTrack = 'PRODUCT',
+  initialResumeSubmissionId = null,
+  initialCandidateId = null,
+}) {
   const [resumeText, setResumeText] = useState(initialResumeText)
   const [track, setTrack] = useState(initialTrack)
+  const [resumeSubmissionId] = useState(initialResumeSubmissionId)
+  const [candidateId] = useState(initialCandidateId)
   const [assessment, setAssessment] = useState(null)
   const [mcqAnswers, setMcqAnswers] = useState({})
   const [dynamicAnswers, setDynamicAnswers] = useState({})
@@ -90,6 +97,8 @@ function Assessment({ initialResumeText = '', initialTrack = 'PRODUCT' }) {
         body: JSON.stringify({
           resume_text: resumeText,
           track,
+          resume_submission_id: resumeSubmissionId,
+          candidate_id: candidateId,
         }),
       })
 
@@ -126,6 +135,7 @@ function Assessment({ initialResumeText = '', initialTrack = 'PRODUCT' }) {
 
     const elapsed = startRef.current ? Math.floor((Date.now() - startRef.current) / 1000) : 0
     const payload = {
+      assessment_session_id: assessment.assessment_session_id,
       track: assessment.track,
       resume_text: resumeText,
       mcq_answers: assessment.mcqs.map((q) => ({

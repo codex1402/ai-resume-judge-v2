@@ -5,10 +5,19 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 from groq import Groq
+from sqlalchemy import select
 
 # Import functions from backend modules
 from backend.gatekeeper.resume_parser import extract_text_from_pdf
 from backend.gatekeeper.judge import analyze_resume_ats
+from backend.storage import (
+    AssessmentAnswer,
+    AssessmentSession,
+    Candidate,
+    ResumeSubmission,
+    init_db,
+    session_scope,
+)
 
 # --- 1. CONFIGURATION ---
 load_dotenv()
@@ -21,6 +30,7 @@ print(f"API Key: {'Loaded' if api_key else 'Missing'}")
 
 UPLOAD_FOLDER = 'uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+init_db()
 
 ASSESSMENT_QUESTION_BANK = {
     "PRODUCT": [
@@ -191,6 +201,12 @@ ASSESSMENT_QUESTION_BANK = {
     ],
 }
 
+TRACK_TIME_LIMITS = {
+    "PRODUCT": 35 * 60,
+    "SERVICE": 30 * 60,
+    "STARTUP": 25 * 60,
+}
+
 
 def _normalize_track(track_value):
     track = (track_value or "").strip().upper()
@@ -209,6 +225,26 @@ def _extract_json_object(text):
         return None
     match = re.search(r"\{[\s\S]*\}", text)
     return match.group(0) if match else None
+
+
+def _extract_email(text):
+    if not text:
+        return None
+    m = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text)
+    return m.group(0).lower() if m else None
+
+
+def _get_or_create_candidate(session, full_name, email):
+    candidate = None
+    if email:
+        candidate = session.scalar(select(Candidate).where(Candidate.email == email))
+    if candidate is None:
+        candidate = Candidate(full_name=full_name or "Unknown", email=email)
+        session.add(candidate)
+        session.flush()
+    elif full_name and full_name != "Unknown":
+        candidate.full_name = full_name
+    return candidate
 
 
 def _build_dynamic_questions(resume_text, track):
@@ -356,6 +392,10 @@ Return JSON only:
         print(f"Subjective grading fallback: {type(err).__name__}: {err}")
         return {"score": total, "max_score": 40, "details": fallback_details}
 
+
+def _iso(dt):
+    return dt.isoformat() if dt else None
+
 # --- 2. THE SERVER ROUTES ---
 
 @app.route('/analyze', methods=['POST'])
@@ -369,6 +409,7 @@ def analyze_resume():
 
     filepath = os.path.join(UPLOAD_FOLDER, file.filename)
     file.save(filepath)
+    selected_track = _normalize_track(request.form.get("track")) or "PRODUCT"
 
     try:
         # Extract text from PDF
@@ -385,6 +426,25 @@ def analyze_resume():
         # Run the ATS Analysis
         result = analyze_resume_ats(text)
         result["resume_text"] = text
+        candidate_name = result.get("candidate_name", "Unknown")
+        email = _extract_email(text)
+
+        with session_scope() as session:
+            candidate = _get_or_create_candidate(session, candidate_name, email)
+            submission = ResumeSubmission(
+                candidate_id=candidate.id,
+                file_name=file.filename,
+                track=selected_track,
+                resume_text=text,
+                ats_score=int(result.get("overall_score", 0) or 0),
+                ats_verdict=str(result.get("verdict", "")),
+                ats_payload=json.dumps(result, ensure_ascii=False),
+            )
+            session.add(submission)
+            session.flush()
+
+            result["candidate_id"] = candidate.id
+            result["resume_submission_id"] = submission.id
 
         return jsonify(result)
     
@@ -403,6 +463,8 @@ def generate_assessment():
     payload = request.get_json(silent=True) or {}
     resume_text = (payload.get("resume_text") or "").strip()
     track = _normalize_track(payload.get("track"))
+    candidate_id = payload.get("candidate_id")
+    resume_submission_id = payload.get("resume_submission_id")
 
     if not resume_text:
         return jsonify({"error": "Missing resume_text"}), 400
@@ -412,11 +474,38 @@ def generate_assessment():
     mcqs = ASSESSMENT_QUESTION_BANK[track]
     dynamic_questions = _build_dynamic_questions(resume_text, track)
 
-    return jsonify({
+    response_payload = {
         "track": track,
         "mcqs": mcqs,
         "dynamic_questions": dynamic_questions,
-    })
+    }
+
+    with session_scope() as session:
+        if resume_submission_id:
+            sub = session.get(ResumeSubmission, int(resume_submission_id))
+            if sub:
+                resume_submission_id = sub.id
+                candidate_id = sub.candidate_id
+            else:
+                resume_submission_id = None
+        if candidate_id:
+            cand = session.get(Candidate, int(candidate_id))
+            candidate_id = cand.id if cand else None
+
+        assessment_session = AssessmentSession(
+            candidate_id=candidate_id,
+            resume_submission_id=resume_submission_id,
+            track=track,
+            status="generated",
+            time_limit_sec=TRACK_TIME_LIMITS.get(track, 0),
+            assessment_payload=json.dumps(response_payload, ensure_ascii=False),
+        )
+        session.add(assessment_session)
+        session.flush()
+        response_payload["assessment_session_id"] = assessment_session.id
+        response_payload["time_limit_sec"] = assessment_session.time_limit_sec
+
+    return jsonify(response_payload)
 
 
 @app.route('/submit_assessment', methods=['POST'])
@@ -424,6 +513,7 @@ def submit_assessment():
     payload = request.get_json(silent=True) or {}
     track = _normalize_track(payload.get("track"))
     resume_text = (payload.get("resume_text") or "").strip()
+    assessment_session_id = payload.get("assessment_session_id")
     mcq_answers = payload.get("mcq_answers") or []
     subjective_answers = payload.get("subjective_answers") or []
     violations = int(payload.get("violations", 0) or 0)
@@ -434,7 +524,6 @@ def submit_assessment():
         return jsonify({"error": "Invalid track"}), 400
 
     question_bank = ASSESSMENT_QUESTION_BANK[track]
-    answer_key = {q["id"]: q["correct_answer"] for q in question_bank}
     answer_map = {int(a.get("id")): str(a.get("selected_answer", "")).strip().upper() for a in mcq_answers if isinstance(a, dict) and a.get("id")}
 
     mcq_details = []
@@ -475,7 +564,7 @@ def submit_assessment():
     elif final_score >= 60:
         verdict = "BORDERLINE"
 
-    return jsonify({
+    response_payload = {
         "track": track,
         "final_score": final_score,
         "verdict": verdict,
@@ -491,7 +580,187 @@ def submit_assessment():
         },
         "mcq_details": mcq_details,
         "subjective_details": subjective.get("details", []),
-    })
+    }
+
+    with session_scope() as session:
+        assessment_session = None
+        if assessment_session_id:
+            assessment_session = session.get(AssessmentSession, int(assessment_session_id))
+
+        if assessment_session is None:
+            assessment_session = AssessmentSession(
+                track=track,
+                status="completed",
+                time_limit_sec=TRACK_TIME_LIMITS.get(track, 0),
+            )
+            session.add(assessment_session)
+            session.flush()
+
+        assessment_session.track = track
+        assessment_session.status = "completed"
+        assessment_session.violations = violations
+        assessment_session.time_taken_sec = time_taken_sec
+        assessment_session.auto_submitted = auto_submitted
+        assessment_session.mcq_score = mcq_score
+        assessment_session.subjective_score = subjective_score
+        assessment_session.penalty = penalty
+        assessment_session.final_score = final_score
+        assessment_session.verdict = verdict
+        assessment_session.result_payload = json.dumps(response_payload, ensure_ascii=False)
+
+        old_answers = session.scalars(
+            select(AssessmentAnswer).where(AssessmentAnswer.assessment_session_id == assessment_session.id)
+        ).all()
+        for old in old_answers:
+            session.delete(old)
+
+        question_map = {q["id"]: q for q in question_bank}
+        for item in mcq_details:
+            q = question_map.get(item["id"], {})
+            session.add(
+                AssessmentAnswer(
+                    assessment_session_id=assessment_session.id,
+                    question_id=int(item["id"]),
+                    question_type="mcq",
+                    question_text=q.get("question"),
+                    selected_answer=item.get("selected_answer"),
+                    correct_answer=item.get("correct_answer"),
+                    is_correct=bool(item.get("is_correct")),
+                    score=12 if item.get("is_correct") else 0,
+                    max_score=12,
+                )
+            )
+
+        subjective_map = {int(i.get("id")): i for i in subjective_answers if isinstance(i, dict) and i.get("id")}
+        for detail in response_payload["subjective_details"]:
+            qid = int(detail.get("id", 0))
+            source = subjective_map.get(qid, {})
+            session.add(
+                AssessmentAnswer(
+                    assessment_session_id=assessment_session.id,
+                    question_id=qid,
+                    question_type="subjective",
+                    question_text=source.get("question"),
+                    answer_text=source.get("answer"),
+                    score=int(detail.get("score", 0)),
+                    max_score=int(detail.get("max_score", 20)),
+                    feedback=detail.get("feedback"),
+                )
+            )
+
+        response_payload["assessment_session_id"] = assessment_session.id
+
+    return jsonify(response_payload)
+
+
+@app.route('/candidate_history/<int:candidate_id>', methods=['GET'])
+def candidate_history(candidate_id):
+    with session_scope() as session:
+        candidate = session.get(Candidate, candidate_id)
+        if not candidate:
+            return jsonify({"error": "Candidate not found"}), 404
+
+        submissions = session.scalars(
+            select(ResumeSubmission).where(ResumeSubmission.candidate_id == candidate_id)
+        ).all()
+        sessions = session.scalars(
+            select(AssessmentSession).where(AssessmentSession.candidate_id == candidate_id)
+        ).all()
+
+        submissions = sorted(submissions, key=lambda s: s.created_at or "", reverse=True)
+        sessions = sorted(sessions, key=lambda s: s.created_at or "", reverse=True)
+
+        response_payload = {
+            "candidate": {
+                "id": candidate.id,
+                "full_name": candidate.full_name,
+                "email": candidate.email,
+                "created_at": _iso(candidate.created_at),
+                "updated_at": _iso(candidate.updated_at),
+            },
+            "resume_submissions": [
+                {
+                    "id": s.id,
+                    "file_name": s.file_name,
+                    "track": s.track,
+                    "ats_score": s.ats_score,
+                    "ats_verdict": s.ats_verdict,
+                    "created_at": _iso(s.created_at),
+                }
+                for s in submissions
+            ],
+            "assessment_sessions": [
+                {
+                    "id": a.id,
+                    "resume_submission_id": a.resume_submission_id,
+                    "track": a.track,
+                    "status": a.status,
+                    "final_score": a.final_score,
+                    "verdict": a.verdict,
+                    "violations": a.violations,
+                    "auto_submitted": a.auto_submitted,
+                    "time_taken_sec": a.time_taken_sec,
+                    "created_at": _iso(a.created_at),
+                    "updated_at": _iso(a.updated_at),
+                }
+                for a in sessions
+            ],
+        }
+
+    return jsonify(response_payload)
+
+
+@app.route('/assessment_session/<int:session_id>', methods=['GET'])
+def assessment_session_detail(session_id):
+    with session_scope() as session:
+        assessment = session.get(AssessmentSession, session_id)
+        if not assessment:
+            return jsonify({"error": "Assessment session not found"}), 404
+
+        answers = session.scalars(
+            select(AssessmentAnswer).where(AssessmentAnswer.assessment_session_id == session_id)
+        ).all()
+        answers = sorted(answers, key=lambda a: (a.question_type or "", a.question_id))
+
+        response_payload = {
+            "assessment_session": {
+                "id": assessment.id,
+                "candidate_id": assessment.candidate_id,
+                "resume_submission_id": assessment.resume_submission_id,
+                "track": assessment.track,
+                "status": assessment.status,
+                "time_limit_sec": assessment.time_limit_sec,
+                "time_taken_sec": assessment.time_taken_sec,
+                "violations": assessment.violations,
+                "auto_submitted": assessment.auto_submitted,
+                "mcq_score": assessment.mcq_score,
+                "subjective_score": assessment.subjective_score,
+                "penalty": assessment.penalty,
+                "final_score": assessment.final_score,
+                "verdict": assessment.verdict,
+                "created_at": _iso(assessment.created_at),
+                "updated_at": _iso(assessment.updated_at),
+            },
+            "answers": [
+                {
+                    "id": a.id,
+                    "question_id": a.question_id,
+                    "question_type": a.question_type,
+                    "question_text": a.question_text,
+                    "selected_answer": a.selected_answer,
+                    "correct_answer": a.correct_answer,
+                    "is_correct": a.is_correct,
+                    "answer_text": a.answer_text,
+                    "score": a.score,
+                    "max_score": a.max_score,
+                    "feedback": a.feedback,
+                    "created_at": _iso(a.created_at),
+                }
+                for a in answers
+            ],
+        }
+
+    return jsonify(response_payload)
 
 if __name__ == '__main__':
     print("Entry-Level ATS Server Running on http://127.0.0.1:5000")
