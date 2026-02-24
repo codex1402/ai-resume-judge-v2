@@ -24,7 +24,13 @@ load_dotenv()
 api_key = os.getenv("GROQ_API_KEY")
 groq_client = Groq(api_key=api_key) if api_key else None
 app = Flask(__name__)
-CORS(app)  # Allow Frontend connection
+
+cors_origins_raw = os.getenv("CORS_ORIGINS", "*").strip()
+if cors_origins_raw == "*" or not cors_origins_raw:
+    CORS(app)
+else:
+    allowed_origins = [origin.strip() for origin in cors_origins_raw.split(",") if origin.strip()]
+    CORS(app, resources={r"/*": {"origins": allowed_origins}})
 
 print(f"API Key: {'Loaded' if api_key else 'Missing'}")
 
@@ -762,6 +768,14 @@ def assessment_session_detail(session_id):
 
     return jsonify(response_payload)
 
+
+@app.route('/healthz', methods=['GET'])
+def healthz():
+    return jsonify({"status": "ok"}), 200
+
 if __name__ == '__main__':
-    print("Entry-Level ATS Server Running on http://127.0.0.1:5000")
-    app.run(debug=True, port=5000)
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "5000"))
+    debug = os.getenv("FLASK_DEBUG", "false").lower() in {"1", "true", "yes"}
+    print(f"Entry-Level ATS Server Running on http://{host}:{port}")
+    app.run(host=host, port=port, debug=debug)

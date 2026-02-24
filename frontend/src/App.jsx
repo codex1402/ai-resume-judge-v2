@@ -3,6 +3,8 @@ import './App.css'
 import Assessment from './Assessment'
 import HistoryPanel from './HistoryPanel'
 
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:5000').replace(/\/$/, '')
+
 function App() {
   const [file, setFile] = useState(null)
   const [track, setTrack] = useState('PRODUCT')
@@ -29,7 +31,7 @@ function App() {
     formData.append('track', track)
 
     try {
-      const response = await fetch('http://127.0.0.1:5000/analyze', {
+      const response = await fetch(`${API_BASE}/analyze`, {
         method: 'POST',
         body: formData,
       })

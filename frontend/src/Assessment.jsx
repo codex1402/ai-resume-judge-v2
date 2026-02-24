@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './Assessment.css'
 
-const API_BASE = 'http://127.0.0.1:5000'
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:5000').replace(/\/$/, '')
 const TRACK_TIME_LIMITS = {
   PRODUCT: 35 * 60,
   SERVICE: 30 * 60,
