@@ -2,6 +2,7 @@ import { useState } from 'react'
 import './App.css'
 import Assessment from './Assessment'
 import HistoryPanel from './HistoryPanel'
+import AIInterviewer from './AIInterviewer'
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:5000').replace(/\/$/, '')
 
@@ -314,6 +315,11 @@ function App() {
           initialTrack={track}
           initialResumeSubmissionId={result.resume_submission_id || null}
           initialCandidateId={result.candidate_id || null}
+        />
+        <AIInterviewer
+          resumeText={result.resume_text || ''}
+          track={track}
+          candidateName={result.candidate_name || 'Candidate'}
         />
         <HistoryPanel />
         </>

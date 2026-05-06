@@ -213,6 +213,12 @@ TRACK_TIME_LIMITS = {
     "STARTUP": 25 * 60,
 }
 
+INTERVIEWER_OPENERS = {
+    "PRODUCT": "Tell me about the most technically challenging project on your resume. I want the problem, the data structures or algorithms involved, and the complexity trade-offs you considered.",
+    "SERVICE": "Walk me through a project or internship where you had to debug an issue across frontend, backend, or database layers. What signals did you use to isolate the cause?",
+    "STARTUP": "Pick a project you shipped end-to-end. What did you build first, what did you cut from scope, and how did you know the MVP was useful?",
+}
+
 
 def _normalize_track(track_value):
     track = (track_value or "").strip().upper()
@@ -397,6 +403,118 @@ Return JSON only:
     except Exception as err:
         print(f"Subjective grading fallback: {type(err).__name__}: {err}")
         return {"score": total, "max_score": 40, "details": fallback_details}
+
+
+def _fallback_interviewer_reply(track, resume_text, messages):
+    candidate_messages = [
+        str(m.get("content", "")).strip()
+        for m in messages
+        if isinstance(m, dict) and m.get("role") == "candidate"
+    ]
+    last_answer = candidate_messages[-1] if candidate_messages else ""
+
+    if not last_answer:
+        return {
+            "message": INTERVIEWER_OPENERS.get(track, INTERVIEWER_OPENERS["PRODUCT"]),
+            "feedback": "Start with a concise project summary, then go deeper into decisions, constraints, and proof of impact.",
+            "score": None,
+            "stage": "question",
+        }
+
+    answer_lower = last_answer.lower()
+    score = 45
+    if len(last_answer) > 120:
+        score += 15
+    if len(last_answer) > 300:
+        score += 10
+    if any(k in answer_lower for k in ["trade", "complexity", "latency", "scale", "test", "metric", "user", "deploy"]):
+        score += 15
+    score = min(score, 85)
+
+    followups = {
+        "PRODUCT": "Good. Now make it concrete: what was the bottleneck, what complexity did your chosen approach have, and what would break first at 10x input size?",
+        "SERVICE": "Good. Now explain how you would reproduce that issue in staging and what logs, tests, or database checks you would add before shipping the fix.",
+        "STARTUP": "Good. Now tell me the first production risk you would address, the fastest validation experiment, and one metric you would track after launch.",
+    }
+
+    return {
+        "message": followups.get(track, followups["PRODUCT"]),
+        "feedback": "Fallback evaluation: add more evidence, measurable impact, and explicit reasoning about trade-offs.",
+        "score": score,
+        "stage": "follow_up",
+    }
+
+
+def _build_interviewer_reply(track, resume_text, candidate_name, messages):
+    if not groq_client:
+        return _fallback_interviewer_reply(track, resume_text, messages)
+
+    transcript = []
+    for item in messages[-10:]:
+        if not isinstance(item, dict):
+            continue
+        role = "Candidate" if item.get("role") == "candidate" else "Interviewer"
+        content = str(item.get("content", "")).strip()
+        if content:
+            transcript.append(f"{role}: {content}")
+
+    prompt = f"""You are a senior AI technical interviewer for entry-level software engineering candidates.
+Run a realistic interview for the selected hiring track. Use the resume evidence and the transcript.
+
+Candidate: {candidate_name or "Unknown"}
+Track: {track}
+Resume:
+{(resume_text or "")[:5000]}
+
+Transcript:
+{chr(10).join(transcript) if transcript else "No messages yet."}
+
+Rules:
+- If there is no candidate answer yet, ask one strong opening question tied to resume evidence.
+- If the candidate answered, give short feedback and ask exactly one sharper follow-up question.
+- Stay professional, specific, and interview-like.
+- Do not reveal scoring rubrics or mention JSON.
+- Score only when the candidate has answered at least once.
+
+Return JSON only:
+{{
+  "message": "interviewer question or follow-up",
+  "feedback": "1-2 sentence private feedback for the candidate",
+  "score": null,
+  "stage": "question"
+}}
+"""
+
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.35,
+            max_tokens=700,
+            response_format={"type": "json_object"},
+        )
+        raw = response.choices[0].message.content if response and response.choices else ""
+        data = json.loads(_extract_json_object(raw) or raw)
+        message = str(data.get("message", "")).strip()
+        if not message:
+            return _fallback_interviewer_reply(track, resume_text, messages)
+
+        score = data.get("score")
+        if score is not None:
+            try:
+                score = max(0, min(100, int(score)))
+            except (TypeError, ValueError):
+                score = None
+
+        return {
+            "message": message,
+            "feedback": str(data.get("feedback", "")).strip(),
+            "score": score,
+            "stage": str(data.get("stage", "follow_up")).strip() or "follow_up",
+        }
+    except Exception as err:
+        print(f"AI interviewer fallback: {type(err).__name__}: {err}")
+        return _fallback_interviewer_reply(track, resume_text, messages)
 
 
 def _iso(dt):
@@ -657,6 +775,27 @@ def submit_assessment():
         response_payload["assessment_session_id"] = assessment_session.id
 
     return jsonify(response_payload)
+
+
+@app.route('/ai_interviewer', methods=['POST'])
+def ai_interviewer():
+    payload = request.get_json(silent=True) or {}
+    track = _normalize_track(payload.get("track")) or "PRODUCT"
+    resume_text = (payload.get("resume_text") or "").strip()
+    candidate_name = (payload.get("candidate_name") or "Candidate").strip()
+    messages = payload.get("messages") or []
+
+    if not isinstance(messages, list):
+        return jsonify({"error": "messages must be a list"}), 400
+    if not resume_text:
+        return jsonify({"error": "Missing resume_text"}), 400
+
+    reply = _build_interviewer_reply(track, resume_text, candidate_name, messages)
+    return jsonify({
+        "track": track,
+        "candidate_name": candidate_name,
+        "reply": reply,
+    })
 
 
 @app.route('/candidate_history/<int:candidate_id>', methods=['GET'])
